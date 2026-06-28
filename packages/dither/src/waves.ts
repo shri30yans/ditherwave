@@ -272,23 +272,40 @@ export function createDitheredWaves(target: HTMLCanvasElement, opts: DitheredWav
     io.observe(target);
   }
 
-  function sync() {
+  // Resize via ResizeObserver — never read layout inside the render loop.
+  function applySize(cssW: number, cssH: number) {
+    const cw = cssW || 640;
+    const ch = cssH || 360;
     const dpr = options.pixelRatio;
-    const parent = target.parentElement;
-    let cw = target.clientWidth || parent?.clientWidth || 0;
-    let ch = target.clientHeight || parent?.clientHeight || 0;
-    if (!cw || !ch) { cw = 640; ch = 360; }
     const w = Math.max(1, Math.floor(cw * dpr));
     const h = Math.max(1, Math.floor(ch * dpr));
     if (target.width !== w) target.width = w;
     if (target.height !== h) target.height = h;
   }
 
+  const refEl = target.parentElement ?? target;
+  applySize(refEl.clientWidth, refEl.clientHeight);
+
+  const ro = new ResizeObserver((entries) => {
+    for (const e of entries) {
+      applySize(e.contentRect.width, e.contentRect.height);
+      if (isStatic() && visible) {
+        needsDraw = true;
+        if (raf === 0) raf = requestAnimationFrame(tick);
+      }
+    }
+  });
+  ro.observe(refEl);
+
   const start = performance.now();
   let raf = 0;
+  let needsDraw = true;
+
+  function isStatic() {
+    return options.disableAnimation && !options.enableMouseInteraction;
+  }
 
   function draw() {
-    sync();
     gl!.useProgram(prog);
     gl!.bindVertexArray(vao);
     gl!.activeTexture(gl!.TEXTURE0);
@@ -317,14 +334,20 @@ export function createDitheredWaves(target: HTMLCanvasElement, opts: DitheredWav
 
   function tick() {
     raf = requestAnimationFrame(tick);
-    if (!visible) return;
+    if (!visible || !needsDraw) return;
     draw();
+    if (isStatic()) {
+      needsDraw = false;
+      cancelAnimationFrame(raf);
+      raf = 0;
+    }
   }
   raf = requestAnimationFrame(tick);
 
   return {
     destroy() {
       cancelAnimationFrame(raf);
+      ro.disconnect();
       target.removeEventListener('pointermove', onMove);
       io?.disconnect();
       gl.deleteTexture(atlasTex);
@@ -334,6 +357,11 @@ export function createDitheredWaves(target: HTMLCanvasElement, opts: DitheredWav
       const prevCharset = options.charset;
       options = { ...options, ...next };
       if (next.charset && next.charset !== prevCharset) uploadAtlas(options.charset);
+      if (next.pixelRatio !== undefined) {
+        applySize(refEl.clientWidth, refEl.clientHeight);
+      }
+      needsDraw = true;
+      if (raf === 0 && visible) raf = requestAnimationFrame(tick);
     },
   };
 }
