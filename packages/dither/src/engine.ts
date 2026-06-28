@@ -21,6 +21,17 @@ const DEFAULTS: Required<Omit<DitherOptions, 'charset'>> & { charset: string } =
   pixelRatio: typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1,
 };
 
+// All uniform names used across every shader. Queried once after program link
+// and stored in a per-mode cache; never called inside the render loop.
+const UNIFORM_NAMES = [
+  'u_src', 'u_pal', 'u_res', 'u_time', 'u_intensity',
+  'u_contrast', 'u_brightness', 'u_paletteCount',
+  'u_matrixSize', 'u_atlas', 'u_charCount', 'u_cell',
+] as const;
+
+type UniformName = typeof UNIFORM_NAMES[number];
+type UniformCache = Record<UniformName, WebGLUniformLocation | null>;
+
 type Source = HTMLImageElement | HTMLVideoElement | HTMLCanvasElement;
 
 function isImg(el: Element): el is HTMLImageElement {
@@ -45,6 +56,18 @@ export function createDither(target: HTMLCanvasElement, source: Source, opts: Di
     dots: program(gl, VERT, DOTS),
     ascii: program(gl, VERT, ASCII),
   };
+
+  // Cache all uniform locations once per program immediately after linking.
+  // getUniformLocation is a synchronous driver call that can stall the GPU
+  // command queue — calling it inside the render loop was the primary perf bug.
+  const uniforms = {} as Record<DitherMode, UniformCache>;
+  for (const mode of Object.keys(progs) as DitherMode[]) {
+    const cache = {} as UniformCache;
+    for (const name of UNIFORM_NAMES) {
+      cache[name] = gl.getUniformLocation(progs[mode], name);
+    }
+    uniforms[mode] = cache;
+  }
 
   const vao = quadVAO(gl);
   const srcTex = createTex(gl, { filter: gl.LINEAR });
@@ -87,8 +110,7 @@ export function createDither(target: HTMLCanvasElement, source: Source, opts: Di
   let paletteCount = uploadPalette(options.palette);
   uploadAtlas(options.charset);
 
-  // Size target to source aspect once we know it.
-  function size(): { w: number; h: number } {
+  function sourceSize(): { w: number; h: number } {
     let sw = 0, sh = 0;
     if (isImg(source)) { sw = source.naturalWidth; sh = source.naturalHeight; }
     else if (isVideo(source)) { sw = source.videoWidth; sh = source.videoHeight; }
@@ -97,24 +119,37 @@ export function createDither(target: HTMLCanvasElement, source: Source, opts: Di
     return { w: sw, h: sh };
   }
 
-  function syncCanvas() {
-    const { w, h } = size();
+  // Apply a CSS pixel size to the backing canvas buffer, accounting for DPR.
+  // Called once at init and then exclusively by ResizeObserver — never inside
+  // the render loop, so it never causes per-frame layout reads.
+  function applySize(cssW: number, cssH: number) {
+    const { w: sw, h: sh } = sourceSize();
+    const cw = cssW || sw;
+    const ch = cssH || sh;
     const dpr = options.pixelRatio;
-    const parent = target.parentElement;
-    let cw = target.clientWidth;
-    let ch = target.clientHeight;
-    if ((!cw || !ch) && parent) {
-      cw = parent.clientWidth;
-      ch = parent.clientHeight;
-    }
-    if (!cw || !ch) {
-      cw = w; ch = h;
-    }
     const pw = Math.max(1, Math.floor(cw * dpr));
     const ph = Math.max(1, Math.floor(ch * dpr));
     if (target.width !== pw) target.width = pw;
     if (target.height !== ph) target.height = ph;
   }
+
+  // Bootstrap canvas size with a single layout read (acceptable — happens
+  // once, not per frame). ResizeObserver handles all subsequent changes.
+  const refEl = target.parentElement ?? target;
+  const { w: sw, h: sh } = sourceSize();
+  applySize(refEl.clientWidth || sw, refEl.clientHeight || sh);
+
+  const ro = new ResizeObserver((entries) => {
+    for (const e of entries) {
+      applySize(e.contentRect.width, e.contentRect.height);
+      // Re-render static image immediately when its container resizes.
+      if (!options.animate && isImg(source) && imgLoaded) {
+        needsDraw = true;
+        if (raf === 0) raf = requestAnimationFrame(tick);
+      }
+    }
+  });
+  ro.observe(refEl);
 
   function uploadSource() {
     gl!.bindTexture(gl!.TEXTURE_2D, srcTex);
@@ -130,8 +165,17 @@ export function createDither(target: HTMLCanvasElement, source: Source, opts: Di
 
   let imgLoaded = false;
   if (isImg(source)) {
-    if (source.complete && source.naturalWidth > 0) { imgLoaded = true; uploadSource(); }
-    else source.addEventListener('load', () => { imgLoaded = true; uploadSource(); }, { once: true });
+    if (source.complete && source.naturalWidth > 0) {
+      imgLoaded = true;
+      uploadSource();
+    } else {
+      source.addEventListener('load', () => {
+        imgLoaded = true;
+        uploadSource();
+        needsDraw = true;
+        if (raf === 0) raf = requestAnimationFrame(tick);
+      }, { once: true });
+    }
   } else {
     imgLoaded = true;
   }
@@ -149,63 +193,51 @@ export function createDither(target: HTMLCanvasElement, source: Source, opts: Di
   let raf = 0;
   let vfc = 0;
 
+  // Signals that the output has changed and a redraw is needed.
+  // For animated / video / canvas sources this is always true; for static
+  // images with animate:false it flips to false after the first draw so the
+  // RAF loop can stop instead of spinning at 60 fps producing identical frames.
+  let needsDraw = true;
+
   function draw() {
     if (!gl) return;
-    syncCanvas();
-
-    if (isVideo(source) && source.readyState >= 2) uploadSource();
-    else if (isCanvas(source)) uploadSource();
 
     const mode = options.mode;
     const prog = progs[mode];
+    const u = uniforms[mode];
+
     gl.useProgram(prog);
     gl.bindVertexArray(vao);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, srcTex);
-    const uSrc = gl.getUniformLocation(prog, 'u_src');
-    if (uSrc) gl.uniform1i(uSrc, 0);
+    if (u.u_src) gl.uniform1i(u.u_src, 0);
 
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, palTex);
-    const uPal = gl.getUniformLocation(prog, 'u_pal');
-    if (uPal) gl.uniform1i(uPal, 1);
+    if (u.u_pal) gl.uniform1i(u.u_pal, 1);
 
-    const uRes = gl.getUniformLocation(prog, 'u_res');
-    if (uRes) gl.uniform2f(uRes, options.resolution, options.resolution);
+    if (u.u_res) gl.uniform2f(u.u_res, options.resolution, options.resolution);
+    if (u.u_time) gl.uniform1f(u.u_time, options.animate ? (performance.now() - start) / 1000 : 0);
+    if (u.u_intensity) gl.uniform1f(u.u_intensity, options.intensity);
+    if (u.u_contrast) gl.uniform1f(u.u_contrast, options.contrast);
+    if (u.u_brightness) gl.uniform1f(u.u_brightness, options.brightness);
+    if (u.u_paletteCount) gl.uniform1f(u.u_paletteCount, paletteCount);
 
-    const uTime = gl.getUniformLocation(prog, 'u_time');
-    if (uTime) gl.uniform1f(uTime, options.animate ? (performance.now() - start) / 1000 : 0);
-
-    const uInt = gl.getUniformLocation(prog, 'u_intensity');
-    if (uInt) gl.uniform1f(uInt, options.intensity);
-
-    const uContrast = gl.getUniformLocation(prog, 'u_contrast');
-    if (uContrast) gl.uniform1f(uContrast, options.contrast);
-    const uBrightness = gl.getUniformLocation(prog, 'u_brightness');
-    if (uBrightness) gl.uniform1f(uBrightness, options.brightness);
-
-    const uPc = gl.getUniformLocation(prog, 'u_paletteCount');
-    if (uPc) gl.uniform1f(uPc, paletteCount);
-
-    if (mode === 'bayer') {
-      const uMs = gl.getUniformLocation(prog, 'u_matrixSize');
-      if (uMs) gl.uniform1f(uMs, options.matrixSize);
+    if (mode === 'bayer' && u.u_matrixSize) {
+      gl.uniform1f(u.u_matrixSize, options.matrixSize);
     }
 
     if (mode === 'ascii') {
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, atlasTex);
-      const uAtlas = gl.getUniformLocation(prog, 'u_atlas');
-      if (uAtlas) gl.uniform1i(uAtlas, 2);
-      const uCharCount = gl.getUniformLocation(prog, 'u_charCount');
-      if (uCharCount) gl.uniform1f(uCharCount, charCount);
-      const uCell = gl.getUniformLocation(prog, 'u_cell');
-      if (uCell) {
+      if (u.u_atlas) gl.uniform1i(u.u_atlas, 2);
+      if (u.u_charCount) gl.uniform1f(u.u_charCount, charCount);
+      if (u.u_cell) {
         const aspect = target.width / target.height;
         const cellX = Math.max(4, Math.floor(options.resolution / 4));
         const cellY = Math.max(4, Math.floor(cellX / aspect));
-        gl.uniform2f(uCell, cellX, cellY);
+        gl.uniform2f(u.u_cell, cellX, cellY);
       }
     }
 
@@ -216,9 +248,21 @@ export function createDither(target: HTMLCanvasElement, source: Source, opts: Di
 
   function tick() {
     raf = requestAnimationFrame(tick);
-    if (!visible) return;
-    if (!imgLoaded) return;
+    if (!visible || !imgLoaded || !needsDraw) return;
+
+    if (isVideo(source) && source.readyState >= 2) uploadSource();
+    else if (isCanvas(source)) uploadSource();
+
     draw();
+
+    // Static images with animate:false produce an identical frame every tick.
+    // Stop the loop after the first successful draw; ResizeObserver and
+    // setOptions() will restart it when the output actually needs to change.
+    if (!options.animate && isImg(source)) {
+      needsDraw = false;
+      cancelAnimationFrame(raf);
+      raf = 0;
+    }
   }
 
   raf = requestAnimationFrame(tick);
@@ -249,6 +293,7 @@ export function createDither(target: HTMLCanvasElement, source: Source, opts: Di
   return {
     destroy() {
       cancelAnimationFrame(raf);
+      ro.disconnect();
       if (io) io.disconnect();
       target.removeEventListener('webglcontextlost', onLost);
       target.removeEventListener('webglcontextrestored', onRestored);
@@ -266,7 +311,16 @@ export function createDither(target: HTMLCanvasElement, source: Source, opts: Di
       options = { ...options, ...next };
       if (next.palette && next.palette !== prevPalette) paletteCount = uploadPalette(options.palette);
       if (next.charset && next.charset !== prevCharset) uploadAtlas(options.charset);
+      if (next.pixelRatio !== undefined) {
+        applySize(refEl.clientWidth, refEl.clientHeight);
+      }
+      // Any option change invalidates a previously static frame.
+      needsDraw = true;
+      if (raf === 0 && imgLoaded) raf = requestAnimationFrame(tick);
     },
-    render() { draw(); },
+    render() {
+      needsDraw = true;
+      draw();
+    },
   };
 }
