@@ -47,7 +47,7 @@ export default function Page() {
             <a href="#install">install</a>
             <a href="#try">try</a>
             <a href="#gallery">gallery</a>
-            <a href="https://github.com/sahilsaini5/ditherwave" target="_blank" rel="noreferrer">github</a>
+            <a href="https://github.com/shri30yans/ditherwave" target="_blank" rel="noreferrer">github</a>
           </nav>
         </header>
 
@@ -200,7 +200,7 @@ export default function Page() {
           <h2>dither <em>your</em> image.</h2>
           <p className="lede">
             the background uses <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>&lt;DitheredWaves&gt;</code>.
-            this dropzone uses <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>&lt;Dither&gt;</code> over real content.
+            drop an image or video to try <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>&lt;Dither&gt;</code>, then save the rendered frame as a PNG.
           </p>
           <DropZone
             mode={mode} palette={palette.colors} resolution={resolution}
@@ -224,7 +224,7 @@ export default function Page() {
         <div className="container" style={{ display: 'flex', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: 16 }}>
           <div>ditherwave — MIT licensed</div>
           <div style={{ display: 'flex', gap: 20 }}>
-            <a href="https://github.com/sahilsaini5/ditherwave">github</a>
+            <a href="https://github.com/shri30yans/ditherwave">github</a>
             <a href="https://www.npmjs.com/package/ditherwave">npm</a>
           </div>
         </div>

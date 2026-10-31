@@ -19,6 +19,7 @@ const DEFAULTS: Required<Omit<DitherOptions, 'charset'>> & { charset: string } =
   brightness: 1,
   pauseOffscreen: true,
   pixelRatio: typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1,
+  preserveDrawingBuffer: false,
 };
 
 // All uniform names used across every shader. Queried once after program link
@@ -47,7 +48,11 @@ function isCanvas(el: Element): el is HTMLCanvasElement {
 export function createDither(target: HTMLCanvasElement, source: Source, opts: DitherOptions = {}): DitherHandle {
   let options = { ...DEFAULTS, ...opts };
 
-  const gl = target.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+  const gl = target.getContext('webgl2', {
+    antialias: false,
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: options.preserveDrawingBuffer,
+  });
   if (!gl) throw new Error('WebGL2 not supported');
 
   const progs: Record<DitherMode, WebGLProgram> = {

@@ -99,6 +99,7 @@ A full-bleed animated fBm-noise pattern, bayer-dithered, quantised to `colorNum`
 | `matrixSize`     | `2 \| 4 \| 8`                                     | `8`            | bayer only |
 | `charset`        | `string`                                          | `' .:-=+*#%@'` | ascii only, density ramp low→high |
 | `pauseOffscreen` | `boolean`                                         | `true`         | uses IntersectionObserver |
+| `preserveDrawingBuffer` | `boolean`                                  | `false`        | keeps the WebGL frame available for canvas export; may reduce performance |
 | `fallback`       | `ReactNode`                                       | `children`     | rendered when WebGL2 isn't available |
 
 ### `<DitheredWaves>` props

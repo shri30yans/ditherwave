@@ -18,6 +18,8 @@ export interface DitherOptions {
   brightness?: number;
   pauseOffscreen?: boolean;
   pixelRatio?: number;
+  /** Keep the latest WebGL frame available for canvas export. May reduce rendering performance. */
+  preserveDrawingBuffer?: boolean;
 }
 
 export interface DitherHandle {

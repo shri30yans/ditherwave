@@ -45,7 +45,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 the library itself is on{' '}
                 <a href="https://www.npmjs.com/package/ditherwave">npm</a>{' '}
                 and{' '}
-                <a href="https://github.com/sahilsaini5/ditherwave">github</a>.
+                <a href="https://github.com/shri30yans/ditherwave">github</a>.
               </p>
             </div>
           </div>
